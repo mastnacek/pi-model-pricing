@@ -3,10 +3,10 @@ import * as path from "node:path";
 import * as os from "node:os";
 
 export interface ModelPricingCost {
-  input: number;      // USD per 1M tokens
-  output: number;     // USD per 1M tokens
+  input: number; // USD per 1M tokens
+  output: number; // USD per 1M tokens
   cacheRead?: number; // USD per 1M tokens
-  cacheWrite?: number;// USD per 1M tokens
+  cacheWrite?: number; // USD per 1M tokens
 }
 
 export interface LiveModelPrice {
@@ -63,7 +63,8 @@ function loadCacheFromDisk(): boolean {
     if (!fs.existsSync(CACHE_FILE)) return false;
     const raw = fs.readFileSync(CACHE_FILE, "utf8");
     const data: CachePayload = JSON.parse(raw);
-    if (!data || !data.models || typeof data.timestamp !== "number") return false;
+    if (!data || !data.models || typeof data.timestamp !== "number")
+      return false;
 
     memoryPriceMap = data.models;
     lastFetchTimestamp = data.timestamp;
@@ -95,7 +96,9 @@ function saveCacheToDisk(): void {
  * Fetch live model pricing from OpenRouter API.
  * Never hardcoded — queries https://openrouter.ai/api/v1/models
  */
-export async function fetchLiveOpenRouterModels(force = false): Promise<Record<string, LiveModelPrice>> {
+export async function fetchLiveOpenRouterModels(
+  force = false,
+): Promise<Record<string, LiveModelPrice>> {
   if (!force && Object.keys(memoryPriceMap).length > 0) {
     if (lastFetchTimestamp && Date.now() - lastFetchTimestamp < CACHE_TTL_MS) {
       return memoryPriceMap;
@@ -109,7 +112,7 @@ export async function fetchLiveOpenRouterModels(force = false): Promise<Record<s
   isFetching = true;
   try {
     const headers: Record<string, string> = {
-      "Accept": "application/json",
+      Accept: "application/json",
       "User-Agent": "pi-model-pricing/1.0.0",
     };
     const apiKey = getOpenRouterApiKey();
@@ -140,8 +143,10 @@ export async function fetchLiveOpenRouterModels(force = false): Promise<Record<s
       // Pricing values are per single token in USD -> multiply by 1M for $/1M tokens
       const promptRate = Number(m.pricing?.prompt ?? 0) * 1_000_000;
       const completionRate = Number(m.pricing?.completion ?? 0) * 1_000_000;
-      const cacheReadRate = Number(m.pricing?.input_cache_read ?? 0) * 1_000_000;
-      const cacheWriteRate = Number(m.pricing?.input_cache_write ?? 0) * 1_000_000;
+      const cacheReadRate =
+        Number(m.pricing?.input_cache_read ?? 0) * 1_000_000;
+      const cacheWriteRate =
+        Number(m.pricing?.input_cache_write ?? 0) * 1_000_000;
 
       const cost: ModelPricingCost = {
         input: promptRate,
@@ -170,7 +175,10 @@ export async function fetchLiveOpenRouterModels(force = false): Promise<Record<s
       saveCacheToDisk();
     }
   } catch (err) {
-    console.error("[pi-model-pricing] Error fetching live OpenRouter pricing:", err);
+    console.error(
+      "[pi-model-pricing] Error fetching live OpenRouter pricing:",
+      err,
+    );
     // If memory is empty, try loading stale cache
     if (Object.keys(memoryPriceMap).length === 0) {
       loadCacheFromDisk();
@@ -185,7 +193,10 @@ export async function fetchLiveOpenRouterModels(force = false): Promise<Record<s
 /**
  * Look up live model pricing by ID and optional provider.
  */
-export function getLiveModelPrice(modelId: string, provider?: string): LiveModelPrice | undefined {
+export function getLiveModelPrice(
+  modelId: string,
+  provider?: string,
+): LiveModelPrice | undefined {
   if (!modelId) return undefined;
   const lowerId = modelId.toLowerCase();
 
@@ -195,7 +206,11 @@ export function getLiveModelPrice(modelId: string, provider?: string): LiveModel
   }
 
   // 2. Provider prefixed match: e.g. provider="openrouter", id="anthropic/claude-3.5-sonnet"
-  if (provider && provider.toLowerCase() === "openrouter" && memoryPriceMap[lowerId]) {
+  if (
+    provider &&
+    provider.toLowerCase() === "openrouter" &&
+    memoryPriceMap[lowerId]
+  ) {
     return memoryPriceMap[lowerId];
   }
 
@@ -244,7 +259,9 @@ export function getPricingCacheStatus(): {
   ageMinutes: number | null;
 } {
   const count = Object.keys(memoryPriceMap).length;
-  const ageMinutes = lastFetchTimestamp ? Math.round((Date.now() - lastFetchTimestamp) / 60000) : null;
+  const ageMinutes = lastFetchTimestamp
+    ? Math.round((Date.now() - lastFetchTimestamp) / 60000)
+    : null;
   return {
     loaded: count > 0,
     count,

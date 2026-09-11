@@ -49,8 +49,13 @@ function resolveModelCost(model: any): {
   }
 
   // 2. Fallback to model's registered cost if available
-  if (model.cost && (typeof model.cost.input === "number" || typeof model.cost.output === "number")) {
-    const isFree = (model.cost.input ?? 0) === 0 && (model.cost.output ?? 0) === 0;
+  if (
+    model.cost &&
+    (typeof model.cost.input === "number" ||
+      typeof model.cost.output === "number")
+  ) {
+    const isFree =
+      (model.cost.input ?? 0) === 0 && (model.cost.output ?? 0) === 0;
     return {
       input: model.cost.input ?? 0,
       output: model.cost.output ?? 0,
@@ -86,8 +91,11 @@ function formatDetailPricingLines(model: any): string[] {
   if (info.source === "unknown") {
     lines.push(colorize("muted", "  Pricing: Local / Unknown rate"));
   } else if (info.isFree) {
-    const srcNote = info.source === "openrouter-live" ? " (OpenRouter live)" : "";
-    lines.push(colorize("success", `  Pricing: Free ($0.00 / 1M tokens)${srcNote}`));
+    const srcNote =
+      info.source === "openrouter-live" ? " (OpenRouter live)" : "";
+    lines.push(
+      colorize("success", `  Pricing: Free ($0.00 / 1M tokens)${srcNote}`),
+    );
   } else {
     let text = `  Pricing: $${formatPriceNumber(info.input)}/1M in · $${formatPriceNumber(info.output)}/1M out`;
     if (info.cacheRead || info.cacheWrite) {
@@ -100,7 +108,12 @@ function formatDetailPricingLines(model: any): string[] {
   }
 
   if (model.contextWindow) {
-    lines.push(colorize("muted", `  Context: ${model.contextWindow.toLocaleString()} tokens`));
+    lines.push(
+      colorize(
+        "muted",
+        `  Context: ${model.contextWindow.toLocaleString()} tokens`,
+      ),
+    );
   }
 
   return lines;
@@ -132,9 +145,15 @@ export function applyModelSelectorPricingPatch(themeGetter?: () => any): void {
     const maxVisible = 10;
     const startIndex = Math.max(
       0,
-      Math.min(this.selectedIndex - Math.floor(maxVisible / 2), this.filteredModels.length - maxVisible)
+      Math.min(
+        this.selectedIndex - Math.floor(maxVisible / 2),
+        this.filteredModels.length - maxVisible,
+      ),
     );
-    const endIndex = Math.min(startIndex + maxVisible, this.filteredModels.length);
+    const endIndex = Math.min(
+      startIndex + maxVisible,
+      this.filteredModels.length,
+    );
 
     // Show visible slice of filtered models with price badges
     for (let i = startIndex; i < endIndex; i++) {
@@ -158,7 +177,10 @@ export function applyModelSelectorPricingPatch(themeGetter?: () => any): void {
 
     // Scroll indicator
     if (startIndex > 0 || endIndex < this.filteredModels.length) {
-      const scrollInfo = colorize("muted", `  (${this.selectedIndex + 1}/${this.filteredModels.length})`);
+      const scrollInfo = colorize(
+        "muted",
+        `  (${this.selectedIndex + 1}/${this.filteredModels.length})`,
+      );
       this.listContainer.addChild(new Text(scrollInfo, 0, 0));
     }
 
@@ -169,12 +191,20 @@ export function applyModelSelectorPricingPatch(themeGetter?: () => any): void {
         this.listContainer.addChild(new Text(colorize("error", l), 0, 0));
       }
     } else if (this.filteredModels.length === 0) {
-      this.listContainer.addChild(new Text(colorize("muted", "  No matching models"), 0, 0));
+      this.listContainer.addChild(
+        new Text(colorize("muted", "  No matching models"), 0, 0),
+      );
     } else {
       const selected = this.filteredModels[this.selectedIndex];
       if (selected?.model) {
         this.listContainer.addChild(new Spacer(1));
-        this.listContainer.addChild(new Text(colorize("muted", `  Model Name: ${selected.model.name}`), 0, 0));
+        this.listContainer.addChild(
+          new Text(
+            colorize("muted", `  Model Name: ${selected.model.name}`),
+            0,
+            0,
+          ),
+        );
 
         // Display extended pricing and context info
         const detailLines = formatDetailPricingLines(selected.model);
@@ -187,7 +217,14 @@ export function applyModelSelectorPricingPatch(themeGetter?: () => any): void {
     if (this.refreshStatusMessage) {
       this.listContainer.addChild(new Spacer(1));
       this.listContainer.addChild(
-        new Text(colorize(this.refreshStatusSuccess ? "success" : "muted", `  ${this.refreshStatusMessage}`), 0, 0)
+        new Text(
+          colorize(
+            this.refreshStatusSuccess ? "success" : "muted",
+            `  ${this.refreshStatusMessage}`,
+          ),
+          0,
+          0,
+        ),
       );
     }
   };
@@ -208,18 +245,32 @@ export function applyModelSelectorPricingPatch(themeGetter?: () => any): void {
       return `${item.id} ${item.provider} ${item.model.name ?? ""}${defaultText} ${priceSearch}`;
     });
 
-    if (typeof this.isDefaultSearch === "function" && this.isDefaultSearch(query)) {
-      const defaultItems = this.activeModels.filter((item: any) => this.isDefaultModel(item.model));
-      const defaultKeys = new Set(defaultItems.map((item: any) => `${item.provider}\0${item.id}`));
+    if (
+      typeof this.isDefaultSearch === "function" &&
+      this.isDefaultSearch(query)
+    ) {
+      const defaultItems = this.activeModels.filter((item: any) =>
+        this.isDefaultModel(item.model),
+      );
+      const defaultKeys = new Set(
+        defaultItems.map((item: any) => `${item.provider}\0${item.id}`),
+      );
       this.filteredModels = [
         ...defaultItems,
-        ...filtered.filter((item: any) => !defaultKeys.has(`${item.provider}\0${item.id}`)),
+        ...filtered.filter(
+          (item: any) => !defaultKeys.has(`${item.provider}\0${item.id}`),
+        ),
       ];
     } else {
       this.filteredModels = filtered;
     }
 
-    this.selectedIndex = query ? 0 : Math.min(this.selectedIndex, Math.max(0, this.filteredModels.length - 1));
+    this.selectedIndex = query
+      ? 0
+      : Math.min(
+          this.selectedIndex,
+          Math.max(0, this.filteredModels.length - 1),
+        );
     this.updateList();
   };
 }

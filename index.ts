@@ -1,11 +1,17 @@
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type {
+  ExtensionAPI,
+  ExtensionContext,
+} from "@earendil-works/pi-coding-agent";
 import {
   initOpenRouterPricing,
   fetchLiveOpenRouterModels,
   getPricingCacheStatus,
   formatPriceNumber,
 } from "./openrouter.js";
-import { applyModelSelectorPricingPatch, setActiveThemeGetter } from "./selector-patch.js";
+import {
+  applyModelSelectorPricingPatch,
+  setActiveThemeGetter,
+} from "./selector-patch.js";
 
 export default function (pi: ExtensionAPI) {
   let activeContext: ExtensionContext | null = null;
@@ -26,7 +32,8 @@ export default function (pi: ExtensionAPI) {
 
   // Register command /model-pricing
   pi.registerCommand("model-pricing", {
-    description: "Inspect live model pricing from OpenRouter API (/model-pricing [refresh | <query>])",
+    description:
+      "Inspect live model pricing from OpenRouter API (/model-pricing [refresh | <query>])",
     handler: async (args: string, ctx: ExtensionContext) => {
       activeContext = ctx;
       const sub = (args || "").trim();
@@ -36,7 +43,10 @@ export default function (pi: ExtensionAPI) {
         try {
           const models = await fetchLiveOpenRouterModels(true);
           const count = Object.keys(models).length;
-          ctx.ui.notify(`Updated ${count} models from OpenRouter live API!`, "info");
+          ctx.ui.notify(
+            `Updated ${count} models from OpenRouter live API!`,
+            "info",
+          );
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
           ctx.ui.notify(`Failed to refresh: ${msg}`, "error");
@@ -50,11 +60,16 @@ export default function (pi: ExtensionAPI) {
         const models = await fetchLiveOpenRouterModels(false);
         const lower = sub.toLowerCase();
         const matches = Object.values(models).filter(
-          (m) => m.id.toLowerCase().includes(lower) || m.name.toLowerCase().includes(lower)
+          (m) =>
+            m.id.toLowerCase().includes(lower) ||
+            m.name.toLowerCase().includes(lower),
         );
 
         if (matches.length === 0) {
-          ctx.ui.notify(`No OpenRouter models found matching "${sub}"`, "warning");
+          ctx.ui.notify(
+            `No OpenRouter models found matching "${sub}"`,
+            "warning",
+          );
           return;
         }
 
@@ -84,7 +99,8 @@ export default function (pi: ExtensionAPI) {
       }
 
       // Status overview
-      const ageStr = status.ageMinutes === null ? "unknown" : `${status.ageMinutes}m ago`;
+      const ageStr =
+        status.ageMinutes === null ? "unknown" : `${status.ageMinutes}m ago`;
       const infoMsg = [
         `OpenRouter Live Pricing Status:`,
         `• Models indexed: ${status.count}`,
