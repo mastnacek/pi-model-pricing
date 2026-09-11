@@ -1,3 +1,4 @@
+import { createRequire } from "node:module";
 import { ModelSelectorComponent } from "@earendil-works/pi-coding-agent";
 import { modelsAreEqual } from "@earendil-works/pi-ai";
 import { Text, Spacer, fuzzyFilter } from "@earendil-works/pi-tui";
@@ -5,6 +6,19 @@ import { getLiveModelPrice, formatPriceNumber } from "./openrouter.js";
 
 let isPatched = false;
 let activeThemeGetter: (() => any) | null = null;
+let fallbackTheme: any = null;
+
+try {
+  const req = createRequire(import.meta.url);
+  const themeMod = req(
+    "/home/jara/.local/lib/node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js"
+  );
+  if (themeMod?.theme) {
+    fallbackTheme = themeMod.theme;
+  }
+} catch (err) {
+  void err;
+}
 
 export function setActiveThemeGetter(getter: () => any) {
   activeThemeGetter = getter;
@@ -12,7 +26,7 @@ export function setActiveThemeGetter(getter: () => any) {
 
 function colorize(colorName: string, text: string): string {
   try {
-    const theme = activeThemeGetter ? activeThemeGetter() : null;
+    const theme = (activeThemeGetter ? activeThemeGetter() : null) ?? fallbackTheme;
     if (theme && typeof theme.fg === "function") {
       return theme.fg(colorName, text);
     }
@@ -81,7 +95,16 @@ function formatRowPriceBadge(model: any): string {
   }
   const inStr = `$${formatPriceNumber(info.input)}`;
   const outStr = `$${formatPriceNumber(info.output)}`;
-  return colorize("dim", `[in:${inStr}/out:${outStr}]`);
+
+  const bracketL = colorize("dim", "[");
+  const inLabel = colorize("dim", "in:");
+  const inPrice = colorize("accent", inStr);
+  const sep = colorize("dim", "/");
+  const outLabel = colorize("dim", "out:");
+  const outPrice = colorize("warning", outStr);
+  const bracketR = colorize("dim", "]");
+
+  return `${bracketL}${inLabel}${inPrice}${sep}${outLabel}${outPrice}${bracketR}`;
 }
 
 function formatDetailPricingLines(model: any): string[] {
@@ -97,14 +120,20 @@ function formatDetailPricingLines(model: any): string[] {
       colorize("success", `  Pricing: Free ($0.00 / 1M tokens)${srcNote}`),
     );
   } else {
-    let text = `  Pricing: $${formatPriceNumber(info.input)}/1M in · $${formatPriceNumber(info.output)}/1M out`;
+    const inPart = `${colorize("dim", "in: ")}${colorize("accent", `$${formatPriceNumber(info.input)}/1M`)}`;
+    const dot = colorize("dim", " · ");
+    const outPart = `${colorize("dim", "out: ")}${colorize("warning", `$${formatPriceNumber(info.output)}/1M`)}`;
+    let text = `  Pricing: ${inPart}${dot}${outPart}`;
+
     if (info.cacheRead || info.cacheWrite) {
-      text += ` (Cache: $${formatPriceNumber(info.cacheRead || 0)} read / $${formatPriceNumber(info.cacheWrite || 0)} write)`;
+      const readVal = colorize("accent", `$${formatPriceNumber(info.cacheRead || 0)}/1M`);
+      const writeVal = colorize("warning", `$${formatPriceNumber(info.cacheWrite || 0)}/1M`);
+      text += ` ${colorize("dim", "(Cache read:")} ${readVal} ${colorize("dim", "/ write:")} ${writeVal}${colorize("dim", ")")}`;
     }
     if (info.source === "openrouter-live") {
-      text += colorize("dim", " · live OpenRouter");
+      text += ` ${colorize("dim", "· live OpenRouter")}`;
     }
-    lines.push(colorize("muted", text));
+    lines.push(text);
   }
 
   if (model.contextWindow) {

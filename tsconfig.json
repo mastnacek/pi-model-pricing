@@ -1,0 +1,25 @@
+{
+  "compilerOptions": {
+    "target": "es2022",
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "lib": ["es2022", "dom"],
+    "noEmit": true,
+    "baseUrl": ".",
+    "paths": {
+      "@earendil-works/pi-coding-agent": [
+        "/home/jara/.local/lib/node_modules/@earendil-works/pi-coding-agent/dist"
+      ],
+      "@earendil-works/pi-ai": [
+        "/home/jara/.local/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist"
+      ],
+      "@earendil-works/pi-tui": [
+        "/home/jara/.local/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-tui/dist"
+      ]
+    }
+  },
+  "include": ["**/*.ts"]
+}
