@@ -1,0 +1,38 @@
+{
+  "name": "pi-model-pricing",
+  "version": "1.0.0",
+  "description": "Live model token pricing extension for Pi coding agent — dynamically displays input and output token prices from OpenRouter API in the model selector and provides /model-pricing inspection.",
+  "type": "module",
+  "license": "MIT",
+  "author": "mastnacek",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mastnacek/pi-model-pricing.git"
+  },
+  "keywords": [
+    "pi-package",
+    "pi",
+    "pi-extension",
+    "openrouter",
+    "pricing",
+    "model-selector"
+  ],
+  "files": [
+    "index.ts",
+    "openrouter.ts",
+    "selector-patch.ts",
+    "package.json",
+    "README.md",
+    "LICENSE"
+  ],
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
+  }
+}
