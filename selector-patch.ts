@@ -11,7 +11,7 @@ let fallbackTheme: any = null;
 try {
   const req = createRequire(import.meta.url);
   const themeMod = req(
-    "/home/jara/.local/lib/node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js"
+    "/home/jara/.local/lib/node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js",
   );
   if (themeMod?.theme) {
     fallbackTheme = themeMod.theme;
@@ -26,7 +26,8 @@ export function setActiveThemeGetter(getter: () => any) {
 
 function colorize(colorName: string, text: string): string {
   try {
-    const theme = (activeThemeGetter ? activeThemeGetter() : null) ?? fallbackTheme;
+    const theme =
+      (activeThemeGetter ? activeThemeGetter() : null) ?? fallbackTheme;
     if (theme && typeof theme.fg === "function") {
       return theme.fg(colorName, text);
     }
@@ -91,20 +92,18 @@ function resolveModelCost(model: any): {
 function formatRowPriceBadge(model: any): string {
   const info = resolveModelCost(model);
   if (info.isFree) {
-    return colorize("success", "[free]");
+    return colorize("success", " ✨ free");
   }
   const inStr = `$${formatPriceNumber(info.input)}`;
   const outStr = `$${formatPriceNumber(info.output)}`;
 
-  const bracketL = colorize("dim", "[");
-  const inLabel = colorize("dim", "in:");
-  const inPrice = colorize("accent", inStr);
-  const sep = colorize("dim", "/");
-  const outLabel = colorize("dim", "out:");
+  const sep = colorize("dim", " ┊ ");
+  const inLabel = colorize("dim", "in ");
+  const inPrice = colorize("customMessageLabel", inStr);
+  const outLabel = colorize("dim", "out ");
   const outPrice = colorize("warning", outStr);
-  const bracketR = colorize("dim", "]");
 
-  return `${bracketL}${inLabel}${inPrice}${sep}${outLabel}${outPrice}${bracketR}`;
+  return ` ${inLabel}${inPrice}${sep}${outLabel}${outPrice}`;
 }
 
 function formatDetailPricingLines(model: any): string[] {
@@ -112,26 +111,32 @@ function formatDetailPricingLines(model: any): string[] {
   const lines: string[] = [];
 
   if (info.source === "unknown") {
-    lines.push(colorize("muted", "  Pricing: Local / Unknown rate"));
+    lines.push(colorize("muted", "  💸 Pricing: Local / Unknown rate"));
   } else if (info.isFree) {
     const srcNote =
       info.source === "openrouter-live" ? " (OpenRouter live)" : "";
     lines.push(
-      colorize("success", `  Pricing: Free ($0.00 / 1M tokens)${srcNote}`),
+      colorize("success", `  ✨ Pricing: Free ($0.00 / 1M tokens)${srcNote}`),
     );
   } else {
-    const inPart = `${colorize("dim", "in: ")}${colorize("accent", `$${formatPriceNumber(info.input)}/1M`)}`;
-    const dot = colorize("dim", " · ");
-    const outPart = `${colorize("dim", "out: ")}${colorize("warning", `$${formatPriceNumber(info.output)}/1M`)}`;
-    let text = `  Pricing: ${inPart}${dot}${outPart}`;
+    const inPart = `${colorize("dim", "in ")}${colorize("customMessageLabel", `$${formatPriceNumber(info.input)}/1M`)}`;
+    const dot = colorize("dim", " ┊ ");
+    const outPart = `${colorize("dim", "out ")}${colorize("warning", `$${formatPriceNumber(info.output)}/1M`)}`;
+    let text = `  💸 Pricing: ${inPart}${dot}${outPart}`;
 
     if (info.cacheRead || info.cacheWrite) {
-      const readVal = colorize("accent", `$${formatPriceNumber(info.cacheRead || 0)}/1M`);
-      const writeVal = colorize("warning", `$${formatPriceNumber(info.cacheWrite || 0)}/1M`);
-      text += ` ${colorize("dim", "(Cache read:")} ${readVal} ${colorize("dim", "/ write:")} ${writeVal}${colorize("dim", ")")}`;
+      const readVal = colorize(
+        "customMessageLabel",
+        `$${formatPriceNumber(info.cacheRead || 0)}/1M`,
+      );
+      const writeVal = colorize(
+        "warning",
+        `$${formatPriceNumber(info.cacheWrite || 0)}/1M`,
+      );
+      text += ` ${colorize("dim", "(cache r:")} ${readVal} ${colorize("dim", "w:")} ${writeVal}${colorize("dim", ")")}`;
     }
     if (info.source === "openrouter-live") {
-      text += ` ${colorize("dim", "· live OpenRouter")}`;
+      text += ` ${colorize("dim", "┊ live OpenRouter")}`;
     }
     lines.push(text);
   }
@@ -140,7 +145,7 @@ function formatDetailPricingLines(model: any): string[] {
     lines.push(
       colorize(
         "muted",
-        `  Context: ${model.contextWindow.toLocaleString()} tokens`,
+        `  🧠 Context: ${model.contextWindow.toLocaleString()} tokens`,
       ),
     );
   }
