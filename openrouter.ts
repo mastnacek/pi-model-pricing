@@ -1,6 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import * as os from "node:os";
+import { agentDir, pricingTtlMs } from "./config.js";
 
 export interface ModelPricingCost {
   input: number; // USD per 1M tokens
@@ -26,10 +26,9 @@ interface CachePayload {
   models: Record<string, LiveModelPrice>;
 }
 
-const CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour TTL
-const CACHE_DIR = path.join(os.homedir(), ".pi", "agent", "cache");
+const CACHE_DIR = path.join(agentDir(), "cache");
 const CACHE_FILE = path.join(CACHE_DIR, "openrouter-pricing-cache.json");
-const AUTH_FILE = path.join(os.homedir(), ".pi", "agent", "auth.json");
+const AUTH_FILE = path.join(agentDir(), "auth.json");
 
 let memoryPriceMap: Record<string, LiveModelPrice> = {};
 /** Canonical permaslug (+ variant) -> price, for joining popularity rows. */
@@ -94,7 +93,7 @@ function loadCacheFromDisk(): boolean {
     rebuildCanonicalPriceMap();
     lastFetchTimestamp = data.timestamp;
 
-    const isExpired = Date.now() - data.timestamp > CACHE_TTL_MS;
+    const isExpired = Date.now() - data.timestamp > pricingTtlMs();
     return !isExpired;
   } catch {
     return false;
@@ -125,7 +124,7 @@ export async function fetchLiveOpenRouterModels(
   force = false,
 ): Promise<Record<string, LiveModelPrice>> {
   if (!force && Object.keys(memoryPriceMap).length > 0) {
-    if (lastFetchTimestamp && Date.now() - lastFetchTimestamp < CACHE_TTL_MS) {
+    if (lastFetchTimestamp && Date.now() - lastFetchTimestamp < pricingTtlMs()) {
       return memoryPriceMap;
     }
   }

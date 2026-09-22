@@ -1,19 +1,48 @@
 import { createRequire } from "node:module";
 import { ModelSelectorComponent } from "@earendil-works/pi-coding-agent";
 import { modelsAreEqual } from "@earendil-works/pi-ai";
-import { Text, Spacer, fuzzyFilter } from "@earendil-works/pi-tui";
-import { getLiveModelPrice, formatPriceNumber } from "./openrouter.js";
+import { Text, Spacer, fuzzyFilter, matchesKey, type KeyId } from "@earendil-works/pi-tui";
+import { formatPriceNumber } from "./openrouter.js";
 import {
-  getModelPopularity,
   formatTokens,
   formatShare,
   getPopularityCacheStatus,
+  ensurePopularityFresh,
   windowLabel,
 } from "./popularity.js";
+import {
+  cycleSortSpec,
+  formatSortSpec,
+  getSortSpec,
+  resolveModelCost,
+  resolvePopularity,
+  rowKey,
+  sortModelItems,
+  type SortableModel,
+} from "./ranking.js";
+import { getSortKey } from "./config.js";
 
 let isPatched = false;
 let activeThemeGetter: (() => any) | null = null;
 let fallbackTheme: any = null;
+/** Guards the once-per-process popularity kickstart from the selector. */
+let popularityKickstarted = false;
+
+/** Human-readable freshness of the popularity cache, for the list header. */
+function popularityStatusText(): string {
+  const status = getPopularityCacheStatus();
+  if (!status.loaded) {
+    return status.stale ? "🔥 loading…" : "🔥 unavailable";
+  }
+  const age =
+    status.ageMinutes === null
+      ? "unknown age"
+      : status.ageMinutes >= 60
+        ? `${Math.round(status.ageMinutes / 60)}h old`
+        : `${status.ageMinutes}m old`;
+  const suffix = status.stale ? " · refreshing…" : "";
+  return `🔥 ${status.count} ranked · ${age}${suffix}`;
+}
 
 try {
   const req = createRequire(import.meta.url);
@@ -45,57 +74,6 @@ function colorize(colorName: string, text: string): string {
   return text;
 }
 
-function resolveModelCost(model: any): {
-  input: number;
-  output: number;
-  cacheRead?: number;
-  cacheWrite?: number;
-  isFree: boolean;
-  source: "openrouter-live" | "builtin-registry" | "unknown";
-} {
-  // 1. Check live OpenRouter pricing first (always priority for fresh live data)
-  const live = getLiveModelPrice(model.id, model.provider);
-  if (live) {
-    // Keep model's internal cost property in sync with live OpenRouter rates
-    if (!model.cost || model.provider === "openrouter") {
-      model.cost = { ...live.cost };
-    }
-    return {
-      input: live.cost.input,
-      output: live.cost.output,
-      cacheRead: live.cost.cacheRead,
-      cacheWrite: live.cost.cacheWrite,
-      isFree: live.isFree,
-      source: "openrouter-live",
-    };
-  }
-
-  // 2. Fallback to model's registered cost if available
-  if (
-    model.cost &&
-    (typeof model.cost.input === "number" ||
-      typeof model.cost.output === "number")
-  ) {
-    const isFree =
-      (model.cost.input ?? 0) === 0 && (model.cost.output ?? 0) === 0;
-    return {
-      input: model.cost.input ?? 0,
-      output: model.cost.output ?? 0,
-      cacheRead: model.cost.cacheRead,
-      cacheWrite: model.cost.cacheWrite,
-      isFree,
-      source: "builtin-registry",
-    };
-  }
-
-  return {
-    input: 0,
-    output: 0,
-    isFree: true,
-    source: "unknown",
-  };
-}
-
 function formatRowPriceBadge(model: any): string {
   const info = resolveModelCost(model);
   if (info.isFree) {
@@ -111,15 +89,6 @@ function formatRowPriceBadge(model: any): string {
   const outPrice = colorize("warning", outStr);
 
   return ` ${inLabel}${inPrice}${sep}${outLabel}${outPrice}`;
-}
-
-/**
- * Resolve OpenRouter popularity for a catalog model. The canonical permaslug
- * from the pricing catalog is the reliable join key into the rankings dataset.
- */
-function resolvePopularity(model: any) {
-  const live = getLiveModelPrice(model.id, model.provider);
-  return getModelPopularity(model.id, live?.canonicalSlug);
 }
 
 /** Compact rank badge for a model-picker row; empty when the model is not ranked. */
@@ -230,13 +199,41 @@ export function applyModelSelectorPricingPatch(themeGetter?: () => any): void {
   const originalUpdateList = proto.updateList;
   const originalFilterModels = proto.filterModels;
 
+  let isFirstUpdateList = true;
+
   // Patch updateList to inject token pricing on each row and detail view
   proto.updateList = function () {
     if (!this.listContainer || !this.filteredModels) {
       return originalUpdateList.call(this);
     }
 
+    // Daily refresh trigger: the selector opening is the "model selection"
+    // moment, so kick the ranking fetch here instead of at extension load.
+    if (isFirstUpdateList) {
+      isFirstUpdateList = false;
+      if (!popularityKickstarted) {
+        popularityKickstarted = true;
+        ensurePopularityFresh((): void => {
+          try {
+            this.filterModels(this.searchInput.getValue());
+          } catch (err) {
+            void err;
+          }
+        });
+      }
+    }
+
     this.listContainer.clear();
+    this.listContainer.addChild(
+      new Text(
+        colorize(
+          "muted",
+          `  sort: ${formatSortSpec(getSortSpec())}  (${getSortKey()} to cycle)  ${popularityStatusText()}`,
+        ),
+        0,
+        0,
+      ),
+    );
     const maxVisible = 10;
     const startIndex = Math.max(
       0,
@@ -328,10 +325,16 @@ export function applyModelSelectorPricingPatch(themeGetter?: () => any): void {
     }
   };
 
-  // Patch filterModels so users can search for "free", "paid", or prices
+  // Patch filterModels so users can search for "free", "paid", or prices,
+  // and so the configured sort spec is applied to the resulting list.
   proto.filterModels = function (query: string) {
     if (!query) {
-      return originalFilterModels.call(this, query);
+      // Pi's own filter pass, then our ordering. Sorting must happen here too:
+      // the empty-query path is the common case (the picker opening).
+      originalFilterModels.call(this, query);
+      this.filteredModels = sortModelItems(this.filteredModels, getSortSpec());
+      this.updateList();
+      return;
     }
 
     const filtered = fuzzyFilter(this.activeModels, query, (item: any) => {
@@ -371,6 +374,10 @@ export function applyModelSelectorPricingPatch(themeGetter?: () => any): void {
       this.filteredModels = filtered;
     }
 
+    // Re-order the filtered rows. With the default spec this is a no-op, which
+    // preserves Pi's own ordering (including the default-model-first branch).
+    this.filteredModels = sortModelItems(this.filteredModels, getSortSpec());
+
     this.selectedIndex = query
       ? 0
       : Math.min(
@@ -379,4 +386,37 @@ export function applyModelSelectorPricingPatch(themeGetter?: () => any): void {
         );
     this.updateList();
   };
+
+  const originalHandleInput = proto.handleInput;
+  if (typeof originalHandleInput === "function") {
+    // Cycle the sort spec without leaving the picker. Registered as a component
+    // input interceptor rather than a global shortcut because overlays swallow
+    // keys before global shortcuts see them.
+    proto.handleInput = function (keyData: string) {
+      try {
+        // getSortKey() is a user-editable config string, hence the cast; an
+        // unparseable key simply never matches instead of throwing.
+        if (matchesKey(keyData, getSortKey() as KeyId)) {
+          const previous = this.filteredModels?.[this.selectedIndex];
+          const previousKey = previous ? rowKey(previous as SortableModel) : null;
+          cycleSortSpec();
+          this.filterModels(this.searchInput.getValue());
+          if (previousKey) {
+            const nextIndex = this.filteredModels.findIndex(
+              (item: any) => rowKey(item as SortableModel) === previousKey,
+            );
+            if (nextIndex >= 0) {
+              this.selectedIndex = nextIndex;
+              this.updateList();
+            }
+          }
+          return;
+        }
+      } catch (err) {
+        // Never let a sort failure swallow the user's keystroke.
+        void err;
+      }
+      return originalHandleInput.call(this, keyData);
+    };
+  }
 }

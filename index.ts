@@ -27,6 +27,15 @@ import {
   applyModelSelectorPricingPatch,
   setActiveThemeGetter,
 } from "./selector-patch.js";
+import {
+  SORT_PRESETS,
+  cycleSortSpec,
+  formatSortSpec,
+  getSortSpec,
+  isDefaultSort,
+  setSortSpec,
+} from "./ranking.js";
+import { CONFIG_PATH, getSortKey } from "./config.js";
 
 /**
  * First-level subcommand documentation. Drives both the lazy autocompletion
@@ -36,6 +45,7 @@ import {
 const COMMAND_DOCS: Record<string, string> = {
   refresh: "force a live reload of pricing and popularity from the OpenRouter API",
   popular: "rank models by real OpenRouter token usage (top 50/day dataset)",
+  sort: "change the model-picker ordering (provider | source | rating | price)",
   help: "show this help and the current cache status",
 };
 
@@ -59,8 +69,9 @@ function helpText(): string {
   const popularityAge =
     popularity.ageMinutes === null ? "never" : `${popularity.ageMinutes}m ago`;
   const populationStatus = popularity.loaded
-    ? `Popularity: ${popularity.count} ranked models, window ${windowLabel(popularity)} (${popularity.windowStart} → ${popularity.windowEnd}), fetched ${popularityAge}.`
+    ? `Popularity: ${popularity.count} ranked models, window ${windowLabel(popularity)} (${popularity.windowStart} → ${popularity.windowEnd}), fetched ${popularityAge}, TTL ${popularity.ttlHours}h${popularity.stale ? " (stale — refreshes on next picker open)" : ""}.`
     : `Popularity: unavailable${getPopularityLastError() ? ` (${getPopularityLastError()})` : " — needs an OpenRouter API key"}.`;
+  const kind = isDefaultSort() ? "default" : "custom";
   return [
     "pi-model-pricing — Live OpenRouter token pricing + popularity",
     "",
@@ -68,10 +79,20 @@ function helpText(): string {
     "  /model-pricing                 — show cache status and model count",
     "  /model-pricing refresh         — force a live reload from the OpenRouter API",
     "  /model-pricing popular [n]     — top n models by real token usage (default 15)",
+    "  /model-pricing sort [spec]     — show, set or cycle the picker ordering",
     "  /model-pricing <keyword>       — search models and compare input/output prices",
     "  /model-pricing help            — show this help",
     "",
+    "Ranking keys (comma-separate, prefix - for descending):",
+    "  rating    most used first (OpenRouter token volume)",
+    "  price     cheapest input rate first",
+    "  provider  group by Pi provider (openrouter, openrouter-work, …)",
+    "  source    live OpenRouter data before registry fallback",
+    "  context   smallest context window first   ·  name  A→Z",
+    "  examples: rating · -price · provider,price · source,rating",
     "Model selector: /model (or Ctrl+P) shows live price and 🔥 popularity badges.",
+    `Sorting: ${formatSortSpec(getSortSpec())} (${kind}) — press ${getSortKey()} inside the picker to cycle.`,
+    `Config: ${CONFIG_PATH}`,
     `Pricing: ${status.count} models, updated ${status.timestamp ? new Date(status.timestamp).toLocaleTimeString() : "never"} (${ageStr}).`,
     populationStatus,
     "Popularity source: https://openrouter.ai/rankings (CC BY 4.0).",
@@ -93,6 +114,28 @@ export default function (pi: ExtensionAPI): void {
   // Apply the patch to ModelSelectorComponent so /model and Ctrl+P show live pricing
   applyModelSelectorPricingPatch();
 
+  // Global shortcut mirrors the in-picker key, so the ordering can be changed
+  // without opening the selector. Overlays swallow keys, so the selector needs
+  // its own interceptor (see selector-patch.ts).
+  try {
+    pi.registerShortcut(getSortKey() as never, {
+      description: "Cycle pi-model-pricing model ranking",
+      handler: async (ctx: ExtensionContext) => {
+        const applied = cycleSortSpec();
+        notify(
+          ctx,
+          `Model ranking: ${formatSortSpec(applied)}${
+            isDefaultSort(applied) ? " (Pi's own order)" : ""
+          }`,
+          "info",
+        );
+      },
+    });
+  } catch (err) {
+    // A conflicting or malformed key must not break extension loading.
+    console.error("[pi-model-pricing] Could not register sort shortcut:", err);
+  }
+
   pi.on("session_start", async (_event, ctx: ExtensionContext) => {
     activeContext = ctx;
     setActiveThemeGetter(() => ctx.ui?.theme);
@@ -113,9 +156,19 @@ export default function (pi: ExtensionAPI): void {
       const tokens = prefix.split(/\s+/).filter(Boolean);
       const trailingSpace = /\s$/.test(prefix);
 
-      // Only the first token is completable; `<keyword>` is free-form.
+      // Second level: `/model-pricing sort <spec>`.
       if (tokens.length > 1 || (trailingSpace && tokens.length === 1)) {
-        return null;
+        const first = (tokens[0] ?? "").toLowerCase();
+        if (first !== "sort") return null;
+        const typed = tokens.slice(1).join(" ").toLowerCase();
+        const items = SORT_PRESETS.filter((preset) =>
+          preset.value.toLowerCase().startsWith(typed),
+        ).map((preset) => ({
+          value: `sort ${preset.value}`,
+          label: `sort ${preset.label}`,
+          description: preset.description,
+        }));
+        return items.length > 0 ? items : null;
       }
 
       const typed = (tokens[0] ?? "").toLowerCase();
@@ -156,6 +209,43 @@ export default function (pi: ExtensionAPI): void {
           const msg = err instanceof Error ? err.message : String(err);
           notify(ctx, `Failed to refresh: ${msg}`, "error");
         }
+        return;
+      }
+
+      if (sub === "sort") {
+        // No argument → show current spec; "cycle"/"next" → advance presets;
+        // anything else is parsed as a sort spec (unknown keys are dropped).
+        const requested = rest.join(" ").trim();
+        let applied: string;
+        if (!requested) {
+          const spec = getSortSpec();
+          notify(
+            ctx,
+            [
+              `Sort: ${formatSortSpec(spec)}${isDefaultSort(spec) ? " (Pi's own order)" : ""}`,
+              `Key in picker: ${getSortKey()} — press it to cycle.`,
+              "",
+              "Modes:",
+              ...SORT_PRESETS.map((p) => `  ${p.label.padEnd(16)} ${p.description}`),
+              "",
+              "Composite specs work too: provider,price · source,rating · -rating",
+            ].join("\n"),
+            "info",
+          );
+          return;
+        }
+        if (requested === "cycle" || requested === "next") {
+          applied = cycleSortSpec();
+        } else {
+          applied = setSortSpec(requested);
+        }
+        notify(
+          ctx,
+          `Model ranking: ${formatSortSpec(applied)}${
+            isDefaultSort(applied) ? " (Pi's own order)" : ""
+          }\nApplies to the next /model open (press ${getSortKey()} there to cycle).`,
+          "info",
+        );
         return;
       }
 

@@ -19,9 +19,9 @@
  */
 
 import * as fs from "node:fs";
-import * as os from "node:os";
 import * as path from "node:path";
 import { getOpenRouterApiKey } from "./openrouter.js";
+import { agentDir, popularityTtlMs } from "./config.js";
 
 export interface ModelPopularity {
   /** Dataset permaslug this entry was matched from (may include a `:variant`). */
@@ -44,9 +44,12 @@ export interface ModelPopularity {
 
 export interface PopularityCacheStatus {
   loaded: boolean;
+  /** True when the cache is missing or older than the configured TTL. */
+  stale: boolean;
   count: number;
   timestamp: number | null;
   ageMinutes: number | null;
+  ttlHours: number;
   windowStart?: string;
   windowEnd?: string;
   asOf?: string;
@@ -93,8 +96,7 @@ interface CachePayload {
   asOf?: string;
 }
 
-const CACHE_TTL_MS = 6 * 60 * 60 * 1000; // 6 hours
-const CACHE_DIR = path.join(os.homedir(), ".pi", "agent", "cache");
+const CACHE_DIR = path.join(agentDir(), "cache");
 const CACHE_FILE = path.join(CACHE_DIR, "openrouter-popularity-cache.json");
 const ENDPOINT = "https://openrouter.ai/api/v1/datasets/rankings-daily";
 
@@ -102,6 +104,8 @@ let index: PopularityIndex | null = null;
 let lastFetchTimestamp: number | null = null;
 let isFetching = false;
 let lastError: string | null = null;
+/** Incremented on every successful fetch, so callers can detect new data. */
+let refreshCount = 0;
 
 /* ------------------------------------------------------------------ */
 /* Slug normalization                                                  */
@@ -234,7 +238,7 @@ function loadCacheFromDisk(): boolean {
       asOf: data.asOf,
     });
     lastFetchTimestamp = data.timestamp;
-    return Date.now() - data.timestamp < CACHE_TTL_MS;
+    return Date.now() - data.timestamp < popularityTtlMs();
   } catch {
     return false;
   }
@@ -269,7 +273,7 @@ export async function fetchOpenRouterPopularity(
     !force &&
     index &&
     lastFetchTimestamp &&
-    Date.now() - lastFetchTimestamp < CACHE_TTL_MS
+    Date.now() - lastFetchTimestamp < popularityTtlMs()
   ) {
     return index;
   }
@@ -314,6 +318,7 @@ export async function fetchOpenRouterPopularity(
       });
       lastFetchTimestamp = Date.now();
       lastError = null;
+      refreshCount += 1;
       saveCacheToDisk();
     }
   } catch (err) {
@@ -329,10 +334,34 @@ export async function fetchOpenRouterPopularity(
 }
 
 export async function initOpenRouterPopularity(): Promise<void> {
-  const isFresh = loadCacheFromDisk();
-  if (!isFresh) {
-    void fetchOpenRouterPopularity(true);
-  }
+  // Load the cached ranking only. Deliberately does NOT hit the network at
+  // extension load: the daily refresh is triggered by the model selector opening
+  // (see `ensurePopularityFresh`), per the once-a-day requirement.
+  loadCacheFromDisk();
+}
+
+/** True when there is no usable cache or it is older than the configured TTL. */
+export function isPopularityStale(): boolean {
+  if (!index || !lastFetchTimestamp) return true;
+  return Date.now() - lastFetchTimestamp >= popularityTtlMs();
+}
+
+/**
+ * Daily refresh trigger. Called when the model selector opens; refreshes in the
+ * background only when stale, and invokes `onRefreshed` only if new data
+ * actually arrived (so callers can safely re-render without churn).
+ */
+export function ensurePopularityFresh(onRefreshed?: () => void): void {
+  if (!isPopularityStale() || isFetching) return;
+  const before = refreshCount;
+  void fetchOpenRouterPopularity(true).then(() => {
+    if (refreshCount !== before) onRefreshed?.();
+  });
+}
+
+/** Monotonic counter of successful fetches; lets callers detect new data. */
+export function getPopularityRefreshCount(): number {
+  return refreshCount;
 }
 
 /* ------------------------------------------------------------------ */
@@ -386,13 +415,16 @@ export function getTopPopular(limit = 15): ModelPopularity[] {
 }
 
 export function getPopularityCacheStatus(): PopularityCacheStatus {
+  const ageMinutes = lastFetchTimestamp
+    ? Math.round((Date.now() - lastFetchTimestamp) / 60000)
+    : null;
   return {
     loaded: index !== null,
+    stale: isPopularityStale(),
     count: index?.ranked.length ?? 0,
     timestamp: lastFetchTimestamp,
-    ageMinutes: lastFetchTimestamp
-      ? Math.round((Date.now() - lastFetchTimestamp) / 60000)
-      : null,
+    ageMinutes,
+    ttlHours: Math.round(popularityTtlMs() / 3600000),
     windowStart: index?.windowStart,
     windowEnd: index?.windowEnd,
     asOf: index?.asOf,
