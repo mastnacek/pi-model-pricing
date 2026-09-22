@@ -11,6 +11,8 @@ export interface ModelPricingCost {
 
 export interface LiveModelPrice {
   id: string;
+  /** Canonical permaslug from the OpenRouter catalog; the join key for popularity. */
+  canonicalSlug?: string;
   name: string;
   cost: ModelPricingCost;
   contextLength?: number;
@@ -30,18 +32,40 @@ const CACHE_FILE = path.join(CACHE_DIR, "openrouter-pricing-cache.json");
 const AUTH_FILE = path.join(os.homedir(), ".pi", "agent", "auth.json");
 
 let memoryPriceMap: Record<string, LiveModelPrice> = {};
+/** Canonical permaslug (+ variant) -> price, for joining popularity rows. */
+let canonicalPriceMap: Record<string, LiveModelPrice> = {};
 let lastFetchTimestamp: number | null = null;
 let isFetching = false;
 
-function getOpenRouterApiKey(): string | undefined {
-  if (process.env.OPENROUTER_API_KEY) {
-    return process.env.OPENROUTER_API_KEY;
+/** `:variant` suffix of a model id, or "" — the catalog strips it from canonical_slug. */
+function variantOf(id: string): string {
+  const colon = id.indexOf(":");
+  return colon >= 0 ? id.slice(colon) : "";
+}
+
+function rebuildCanonicalPriceMap(): void {
+  const next: Record<string, LiveModelPrice> = {};
+  for (const item of Object.values(memoryPriceMap)) {
+    if (item.canonicalSlug) {
+      next[`${item.canonicalSlug}${variantOf(item.id)}`] = item;
+    }
+    next[item.id] = item;
   }
+  canonicalPriceMap = next;
+}
+
+export function getOpenRouterApiKey(): string | undefined {
+  const fromEnv = process.env.OPENROUTER_API_KEY?.trim();
+  if (fromEnv) return fromEnv;
   try {
     if (fs.existsSync(AUTH_FILE)) {
       const auth = JSON.parse(fs.readFileSync(AUTH_FILE, "utf8"));
-      if (auth.openrouter?.apiKey) {
-        return auth.openrouter.apiKey;
+      // `apiKey` is the configured key; `key`/`access` cover keys written by
+      // /login and by pi-openrouter-accounts (api_key and oauth credentials).
+      const credential = auth?.openrouter;
+      const candidate = credential?.apiKey ?? credential?.key ?? credential?.access;
+      if (typeof candidate === "string" && candidate.trim().length > 0) {
+        return candidate.trim();
       }
     }
   } catch {}
@@ -67,6 +91,7 @@ function loadCacheFromDisk(): boolean {
       return false;
 
     memoryPriceMap = data.models;
+    rebuildCanonicalPriceMap();
     lastFetchTimestamp = data.timestamp;
 
     const isExpired = Date.now() - data.timestamp > CACHE_TTL_MS;
@@ -159,6 +184,7 @@ export async function fetchLiveOpenRouterModels(
 
       const item: LiveModelPrice = {
         id: m.id,
+        canonicalSlug: typeof m.canonical_slug === "string" ? m.canonical_slug : undefined,
         name: m.name || m.id,
         cost,
         contextLength: m.context_length,
@@ -171,6 +197,7 @@ export async function fetchLiveOpenRouterModels(
 
     if (Object.keys(newMap).length > 0) {
       memoryPriceMap = newMap;
+      rebuildCanonicalPriceMap();
       lastFetchTimestamp = now;
       saveCacheToDisk();
     }
@@ -240,6 +267,17 @@ export function getLiveModelPrice(
   }
 
   return undefined;
+}
+
+/**
+ * Look up live pricing by an OpenRouter permaslug (canonical_slug, optionally
+ * with a `:variant`), which is how the rankings dataset keys its rows.
+ */
+export function getLiveModelPriceByCanonicalSlug(
+  slug: string | undefined,
+): LiveModelPrice | undefined {
+  if (!slug) return undefined;
+  return canonicalPriceMap[slug];
 }
 
 /**

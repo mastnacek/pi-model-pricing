@@ -3,6 +3,13 @@ import { ModelSelectorComponent } from "@earendil-works/pi-coding-agent";
 import { modelsAreEqual } from "@earendil-works/pi-ai";
 import { Text, Spacer, fuzzyFilter } from "@earendil-works/pi-tui";
 import { getLiveModelPrice, formatPriceNumber } from "./openrouter.js";
+import {
+  getModelPopularity,
+  formatTokens,
+  formatShare,
+  getPopularityCacheStatus,
+  windowLabel,
+} from "./popularity.js";
 
 let isPatched = false;
 let activeThemeGetter: (() => any) | null = null;
@@ -106,6 +113,22 @@ function formatRowPriceBadge(model: any): string {
   return ` ${inLabel}${inPrice}${sep}${outLabel}${outPrice}`;
 }
 
+/**
+ * Resolve OpenRouter popularity for a catalog model. The canonical permaslug
+ * from the pricing catalog is the reliable join key into the rankings dataset.
+ */
+function resolvePopularity(model: any) {
+  const live = getLiveModelPrice(model.id, model.provider);
+  return getModelPopularity(model.id, live?.canonicalSlug);
+}
+
+/** Compact rank badge for a model-picker row; empty when the model is not ranked. */
+function formatRowPopularityBadge(model: any): string {
+  const popularity = resolvePopularity(model);
+  if (!popularity) return "";
+  return colorize("warning", ` 🔥#${popularity.globalRank}`);
+}
+
 function formatDetailPricingLines(model: any): string[] {
   const info = resolveModelCost(model);
   const lines: string[] = [];
@@ -151,6 +174,44 @@ function formatDetailPricingLines(model: any): string[] {
   }
 
   return lines;
+}
+
+/**
+ * Popularity detail lines. Rendered only when the rankings index is available,
+ * because an absent row means "never reached the daily top 50", not "unused".
+ */
+function formatDetailPopularityLines(model: any): string[] {
+  const status = getPopularityCacheStatus();
+  if (!status.loaded) return [];
+
+  const window = windowLabel(status);
+  const popularity = resolvePopularity(model);
+
+  if (!popularity) {
+    return [
+      colorize(
+        "muted",
+        `  📈 Popularity: outside the top-50 daily ranking (${window})`,
+      ),
+    ];
+  }
+
+  const rank = colorize(
+    "warning",
+    `#${popularity.globalRank} of ${status.count}`,
+  );
+  const tokens = colorize(
+    "customMessageLabel",
+    `${formatTokens(popularity.tokens)} tokens`,
+  );
+  const share = colorize("dim", `${formatShare(popularity.share)} of ranked traffic`);
+  const best = colorize("dim", `best daily rank #${popularity.bestRank}`);
+  const days = colorize("dim", `${popularity.daysRanked} day(s) ranked`);
+
+  return [
+    `  📈 Popularity: ${rank} ┊ ${tokens} (${window}) ┊ ${share}`,
+    `     ${best} ┊ ${days} ┊ ${colorize("dim", "Source: openrouter.ai/rankings")}`,
+  ];
 }
 
 export function applyModelSelectorPricingPatch(themeGetter?: () => any): void {
@@ -204,8 +265,9 @@ export function applyModelSelectorPricingPatch(themeGetter?: () => any): void {
       const modelText = isSelected ? colorize("accent", item.id) : item.id;
       const providerBadge = colorize("muted", `[${item.provider}]`);
       const priceBadge = formatRowPriceBadge(item.model);
+      const popularityBadge = formatRowPopularityBadge(item.model);
 
-      const line = `${cursor}${currentMarker}${modelText} ${providerBadge} ${priceBadge}${defaultBadge}`;
+      const line = `${cursor}${currentMarker}${modelText} ${providerBadge} ${priceBadge}${popularityBadge}${defaultBadge}`;
       this.listContainer.addChild(new Text(line, 0, 0));
     }
 
@@ -241,7 +303,10 @@ export function applyModelSelectorPricingPatch(themeGetter?: () => any): void {
         );
 
         // Display extended pricing and context info
-        const detailLines = formatDetailPricingLines(selected.model);
+        const detailLines = [
+          ...formatDetailPricingLines(selected.model),
+          ...formatDetailPopularityLines(selected.model),
+        ];
         for (const dl of detailLines) {
           this.listContainer.addChild(new Text(dl, 0, 0));
         }
@@ -276,7 +341,14 @@ export function applyModelSelectorPricingPatch(themeGetter?: () => any): void {
         ? " free $0 0$"
         : ` paid $${priceInfo.input} $${priceInfo.output}`;
 
-      return `${item.id} ${item.provider} ${item.model.name ?? ""}${defaultText} ${priceSearch}`;
+      // Only ranked models carry these tokens, so filtering on "popular" or
+      // "hot" narrows the list to models that reached the daily top 50.
+      const popularity = resolvePopularity(item.model);
+      const popularitySearch = popularity
+        ? ` popular hot rank#${popularity.globalRank} ${formatTokens(popularity.tokens)}`
+        : "";
+
+      return `${item.id} ${item.provider} ${item.model.name ?? ""}${defaultText} ${priceSearch}${popularitySearch}`;
     });
 
     if (

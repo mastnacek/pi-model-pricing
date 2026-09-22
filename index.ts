@@ -7,9 +7,22 @@ import type { AutocompleteItem } from "@earendil-works/pi-tui";
 import {
   initOpenRouterPricing,
   fetchLiveOpenRouterModels,
+  getLiveModelPriceByCanonicalSlug,
   getPricingCacheStatus,
   formatPriceNumber,
 } from "./openrouter.js";
+import {
+  initOpenRouterPopularity,
+  fetchOpenRouterPopularity,
+  getPopularityCacheStatus,
+  getPopularityLastError,
+  getTopPopular,
+  getModelPopularity,
+  popularityAttribution,
+  formatTokens,
+  formatShare,
+  windowLabel,
+} from "./popularity.js";
 import {
   applyModelSelectorPricingPatch,
   setActiveThemeGetter,
@@ -21,7 +34,8 @@ import {
  * intentionally omitted.
  */
 const COMMAND_DOCS: Record<string, string> = {
-  refresh: "force a live reload of model pricing from the OpenRouter API",
+  refresh: "force a live reload of pricing and popularity from the OpenRouter API",
+  popular: "rank models by real OpenRouter token usage (top 50/day dataset)",
   help: "show this help and the current cache status",
 };
 
@@ -41,17 +55,26 @@ function helpText(): string {
   const status = getPricingCacheStatus();
   const ageStr =
     status.ageMinutes === null ? "unknown" : `${status.ageMinutes}m ago`;
+  const popularity = getPopularityCacheStatus();
+  const popularityAge =
+    popularity.ageMinutes === null ? "never" : `${popularity.ageMinutes}m ago`;
+  const populationStatus = popularity.loaded
+    ? `Popularity: ${popularity.count} ranked models, window ${windowLabel(popularity)} (${popularity.windowStart} → ${popularity.windowEnd}), fetched ${popularityAge}.`
+    : `Popularity: unavailable${getPopularityLastError() ? ` (${getPopularityLastError()})` : " — needs an OpenRouter API key"}.`;
   return [
-    "pi-model-pricing — Live OpenRouter token pricing",
+    "pi-model-pricing — Live OpenRouter token pricing + popularity",
     "",
     "Commands:",
     "  /model-pricing                 — show cache status and model count",
     "  /model-pricing refresh         — force a live reload from the OpenRouter API",
+    "  /model-pricing popular [n]     — top n models by real token usage (default 15)",
     "  /model-pricing <keyword>       — search models and compare input/output prices",
     "  /model-pricing help            — show this help",
     "",
-    "Model selector: /model (or Ctrl+P) shows live price badges.",
-    `Cache: ${status.count} models, updated ${status.timestamp ? new Date(status.timestamp).toLocaleTimeString() : "never"} (${ageStr}).`,
+    "Model selector: /model (or Ctrl+P) shows live price and 🔥 popularity badges.",
+    `Pricing: ${status.count} models, updated ${status.timestamp ? new Date(status.timestamp).toLocaleTimeString() : "never"} (${ageStr}).`,
+    populationStatus,
+    "Popularity source: https://openrouter.ai/rankings (CC BY 4.0).",
   ].join("\n");
 }
 
@@ -63,6 +86,9 @@ export default function (pi: ExtensionAPI): void {
 
   // Initialize live pricing loader (loads disk cache immediately, refreshes in background)
   void initOpenRouterPricing();
+
+  // Initialize OpenRouter popularity (token-volume rankings; key-gated)
+  void initOpenRouterPopularity();
 
   // Apply the patch to ModelSelectorComponent so /model and Ctrl+P show live pricing
   applyModelSelectorPricingPatch();
@@ -102,7 +128,9 @@ export default function (pi: ExtensionAPI): void {
     handler: async (args: string, ctx: ExtensionCommandContext) => {
       activeContext = ctx;
       const trimmed = (args || "").trim();
-      const sub = (trimmed.split(/\s+/)[0] ?? "").toLowerCase();
+      const tokens = trimmed.split(/\s+/).filter(Boolean);
+      const sub = (tokens[0] ?? "").toLowerCase();
+      const rest = tokens.slice(1);
 
       if (!sub || sub === "help" || sub === "-h" || sub === "--help") {
         notify(ctx, helpText(), "info");
@@ -110,13 +138,18 @@ export default function (pi: ExtensionAPI): void {
       }
 
       if (sub === "refresh") {
-        notify(ctx, "Fetching live pricing from OpenRouter API...", "info");
+        notify(ctx, "Fetching live pricing + popularity from OpenRouter API...", "info");
         try {
           const models = await fetchLiveOpenRouterModels(true);
           const count = Object.keys(models).length;
+          await fetchOpenRouterPopularity(true);
+          const popularity = getPopularityCacheStatus();
+          const popularityLine = popularity.loaded
+            ? `Popularity: ${popularity.count} ranked models (${windowLabel(popularity)}, ${popularity.windowStart} → ${popularity.windowEnd})`
+            : `Popularity: unavailable${getPopularityLastError() ? ` (${getPopularityLastError()})` : ""}`;
           notify(
             ctx,
-            `Updated ${count} models from OpenRouter live API!`,
+            `Updated ${count} models from OpenRouter live API!\n${popularityLine}`,
             "info",
           );
         } catch (err) {
@@ -126,9 +159,56 @@ export default function (pi: ExtensionAPI): void {
         return;
       }
 
+      if (sub === "popular" || sub === "popularity" || sub === "top") {
+        // Ensure the price catalog is loaded so each row can carry a rate.
+        await fetchLiveOpenRouterModels(false);
+        await fetchOpenRouterPopularity(false);
+        const status = getPopularityCacheStatus();
+        if (!status.loaded) {
+          notify(
+            ctx,
+            `Popularity data unavailable${getPopularityLastError() ? `: ${getPopularityLastError()}` : ". The rankings dataset requires an OpenRouter API key (OPENROUTER_API_KEY or auth.json)."}`,
+            "warning",
+          );
+          return;
+        }
+        const requested = Number.parseInt(rest[0] ?? "", 10);
+        const limit = Number.isFinite(requested) && requested > 0 ? requested : 15;
+        const top = getTopPopular(limit);
+        const window = windowLabel(status);
+        const lines = [
+          `Top ${top.length} models by OpenRouter token usage (${window}: ${status.windowStart} → ${status.windowEnd})`,
+          "",
+        ];
+        for (const entry of top) {
+          // Popularity rows are keyed on canonical permaslugs, not catalog ids.
+          const price = getLiveModelPriceByCanonicalSlug(entry.slug);
+          const priceText = price
+            ? price.isFree
+              ? "free"
+              : `$${formatPriceNumber(price.cost.input)}/$${formatPriceNumber(price.cost.output)} per 1M`
+            : "price not in catalog";
+          lines.push(
+            `#${entry.globalRank}  ${entry.slug}`,
+            `    ${formatTokens(entry.tokens)} tokens (${window}) · ${formatShare(entry.share)} of ranked traffic · ${priceText}`,
+          );
+        }
+        lines.push("", popularityAttribution(status));
+        if (ctx.hasUI && ctx.ui?.editor) {
+          await ctx.ui.editor("OpenRouter Popularity", lines.join("\n"));
+        } else if (ctx.hasUI) {
+          ctx.ui.notify(lines.join("\n"), "info");
+        } else {
+          console.log(lines.join("\n"));
+        }
+        return;
+      }
+
       const status = getPricingCacheStatus();
+      const popularityStatus = getPopularityCacheStatus();
       // Query search — the whole argument is treated as the keyword.
       const models = await fetchLiveOpenRouterModels(false);
+      await fetchOpenRouterPopularity(false);
       const lower = trimmed.toLowerCase();
       const matches = Object.values(models).filter(
         (m) =>
@@ -151,6 +231,14 @@ export default function (pi: ExtensionAPI): void {
         const outP = `$${formatPriceNumber(m.cost.output)}/1M out`;
         lines.push(`• ${m.id}${freeTag}`);
         lines.push(`  ${m.name} | ${inP} | ${outP}`);
+        if (popularityStatus.loaded) {
+          const popularity = getModelPopularity(m.id, m.canonicalSlug);
+          lines.push(
+            popularity
+              ? `  🔥 #${popularity.globalRank} of ${popularityStatus.count} · ${formatTokens(popularity.tokens)} tokens (${windowLabel(popularityStatus)}) · ${formatShare(popularity.share)} of ranked traffic`
+              : `  🔥 not in the top-50 daily ranking (${windowLabel(popularityStatus)})`,
+          );
+        }
       }
       if (matches.length > 25) {
         lines.push(`  ...and ${matches.length - 25} more`);
