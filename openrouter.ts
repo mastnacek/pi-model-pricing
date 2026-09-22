@@ -110,6 +110,7 @@ export async function fetchLiveOpenRouterModels(
   }
 
   isFetching = true;
+  let timeout: ReturnType<typeof setTimeout> | undefined;
   try {
     const headers: Record<string, string> = {
       Accept: "application/json",
@@ -121,13 +122,12 @@ export async function fetchLiveOpenRouterModels(
     }
 
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 12000);
+    timeout = setTimeout(() => controller.abort(), 12000);
 
     const res = await fetch("https://openrouter.ai/api/v1/models", {
       headers,
       signal: controller.signal,
     });
-    clearTimeout(timeout);
 
     if (!res.ok) {
       throw new Error(`OpenRouter API error: ${res.status} ${res.statusText}`);
@@ -184,6 +184,7 @@ export async function fetchLiveOpenRouterModels(
       loadCacheFromDisk();
     }
   } finally {
+    if (timeout !== undefined) clearTimeout(timeout);
     isFetching = false;
   }
 
