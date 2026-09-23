@@ -1,6 +1,6 @@
 {
   "name": "pi-model-pricing",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "Live model token pricing + popularity extension for Pi coding agent — displays input/output prices and OpenRouter token-usage rankings in the model selector and via /model-pricing.",
   "type": "module",
   "license": "MIT",

@@ -16,9 +16,7 @@ import {
   getSortSpec,
   resolveModelCost,
   resolvePopularity,
-  rowKey,
   sortModelItems,
-  type SortableModel,
 } from "./ranking.js";
 import { getSortKey } from "./config.js";
 
@@ -397,19 +395,14 @@ export function applyModelSelectorPricingPatch(themeGetter?: () => any): void {
         // getSortKey() is a user-editable config string, hence the cast; an
         // unparseable key simply never matches instead of throwing.
         if (matchesKey(keyData, getSortKey() as KeyId)) {
-          const previous = this.filteredModels?.[this.selectedIndex];
-          const previousKey = previous ? rowKey(previous as SortableModel) : null;
           cycleSortSpec();
           this.filterModels(this.searchInput.getValue());
-          if (previousKey) {
-            const nextIndex = this.filteredModels.findIndex(
-              (item: any) => rowKey(item as SortableModel) === previousKey,
-            );
-            if (nextIndex >= 0) {
-              this.selectedIndex = nextIndex;
-              this.updateList();
-            }
-          }
+          // Re-ordering invalidates whatever position the cursor held: keeping
+          // it would scroll the viewport into the middle of the new order (and
+          // after a change of key the highlighted row means nothing anyway).
+          // Jump back to the first row so the new ranking is read from the top.
+          this.selectedIndex = 0;
+          this.updateList();
           return;
         }
       } catch (err) {
