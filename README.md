@@ -33,7 +33,7 @@ Both are cached under `$PI_CODING_AGENT_DIR/cache/` (default `~/.pi/agent/cache/
 
 ## Ranking / sorting
 
-Press **`alt+s`** inside the model picker to cycle through presets. The current spec is shown in the picker header and persisted to the config file, so it survives restarts.
+Press **`alt+s`** inside the model picker to cycle through presets. The current spec is shown in the picker header and persisted to the config file, so it survives restarts. Each change re-renders the list **from the first row** — the cursor is not carried over, since a position under the old ordering means nothing under the new one.
 
 ```text
 /model-pricing sort                 show current spec + all modes
