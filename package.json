@@ -40,6 +40,11 @@
   "peerDependencies": {
     "@earendil-works/pi-ai": "*",
     "@earendil-works/pi-coding-agent": "*",
-    "@earendil-works/pi-tui": "*"
+    "@earendil-works/pi-tui": "*",
+    "@earendil-works/pi-agent-core": "*",
+    "typebox": "*"
+  },
+  "scripts": {
+    "test": "node --test test/**/*.test.js"
   }
 }
