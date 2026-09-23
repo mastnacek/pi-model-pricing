@@ -100,6 +100,14 @@ function helpText(): string {
 }
 
 export default function (pi: ExtensionAPI): void {
+  /** Unsubscribers from every `pi.on()`; drained on session_shutdown (AGENTS §5). */
+  const unsubscribers: Array<() => void> = [];
+
+  /** Retain a `pi.on()` return value; older engine typings declare it void. */
+  const track = (result: unknown): void => {
+    if (typeof result === "function") unsubscribers.push(result as () => void);
+  };
+
   let activeContext: ExtensionContext | null = null;
 
   // Track active theme for native styling in the model selector
@@ -136,14 +144,15 @@ export default function (pi: ExtensionAPI): void {
     console.error("[pi-model-pricing] Could not register sort shortcut:", err);
   }
 
-  pi.on("session_start", async (_event, ctx: ExtensionContext) => {
+  track(pi.on("session_start", async (_event, ctx: ExtensionContext) => {
     activeContext = ctx;
     setActiveThemeGetter(() => ctx.ui?.theme);
-  });
+  }));
 
   // Drop the captured context on shutdown so no stale UI/theme handle survives
   // a session replacement (AGENTS.md §5/§6).
   pi.on("session_shutdown", () => {
+    while (unsubscribers.length > 0) unsubscribers.pop()?.();
     activeContext = null;
     setActiveThemeGetter(() => undefined);
   });
