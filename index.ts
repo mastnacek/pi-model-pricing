@@ -35,69 +35,8 @@ import {
   isDefaultSort,
   setSortSpec,
 } from "./ranking.js";
-import { CONFIG_PATH, getSortKey } from "./config.js";
-
-/**
- * First-level subcommand documentation. Drives both the lazy autocompletion
- * (AGENTS.md §4) and the help banner. `<keyword>` is free-form and therefore
- * intentionally omitted.
- */
-const COMMAND_DOCS: Record<string, string> = {
-  refresh: "force a live reload of pricing and popularity from the OpenRouter API",
-  popular: "rank models by real OpenRouter token usage (top 50/day dataset)",
-  sort: "change the model-picker ordering (provider | source | rating | price)",
-  help: "show this help and the current cache status",
-};
-
-function notify(
-  ctx: ExtensionContext,
-  message: string,
-  type: "info" | "warning" | "error" = "info",
-): void {
-  if (ctx.hasUI) {
-    ctx.ui.notify(message, type);
-  } else {
-    console.log(message);
-  }
-}
-
-function helpText(): string {
-  const status = getPricingCacheStatus();
-  const ageStr =
-    status.ageMinutes === null ? "unknown" : `${status.ageMinutes}m ago`;
-  const popularity = getPopularityCacheStatus();
-  const popularityAge =
-    popularity.ageMinutes === null ? "never" : `${popularity.ageMinutes}m ago`;
-  const populationStatus = popularity.loaded
-    ? `Popularity: ${popularity.count} ranked models, window ${windowLabel(popularity)} (${popularity.windowStart} → ${popularity.windowEnd}), fetched ${popularityAge}, TTL ${popularity.ttlHours}h${popularity.stale ? " (stale — refreshes on next picker open)" : ""}.`
-    : `Popularity: unavailable${getPopularityLastError() ? ` (${getPopularityLastError()})` : " — needs an OpenRouter API key"}.`;
-  const kind = isDefaultSort() ? "default" : "custom";
-  return [
-    "pi-model-pricing — Live OpenRouter token pricing + popularity",
-    "",
-    "Commands:",
-    "  /model-pricing                 — show cache status and model count",
-    "  /model-pricing refresh         — force a live reload from the OpenRouter API",
-    "  /model-pricing popular [n]     — top n models by real token usage (default 15)",
-    "  /model-pricing sort [spec]     — show, set or cycle the picker ordering",
-    "  /model-pricing <keyword>       — search models and compare input/output prices",
-    "  /model-pricing help            — show this help",
-    "",
-    "Ranking keys (comma-separate, prefix - for descending):",
-    "  rating    most used first (OpenRouter token volume)",
-    "  price     cheapest input rate first",
-    "  provider  group by Pi provider (openrouter, openrouter-work, …)",
-    "  source    live OpenRouter data before registry fallback",
-    "  context   smallest context window first   ·  name  A→Z",
-    "  examples: rating · -price · provider,price · source,rating",
-    "Model selector: /model (or Ctrl+P) shows live price and 🔥 popularity badges.",
-    `Sorting: ${formatSortSpec(getSortSpec())} (${kind}) — press ${getSortKey()} inside the picker to cycle.`,
-    `Config: ${CONFIG_PATH}`,
-    `Pricing: ${status.count} models, updated ${status.timestamp ? new Date(status.timestamp).toLocaleTimeString() : "never"} (${ageStr}).`,
-    populationStatus,
-    "Popularity source: https://openrouter.ai/rankings (CC BY 4.0).",
-  ].join("\n");
-}
+import { getSortKey, setConfigCwd } from "./config.js";
+import { COMMAND_DOCS, helpText, notify } from "./src/help.js";
 
 export default function (pi: ExtensionAPI): void {
   /** Unsubscribers from every `pi.on()`; drained on session_shutdown (AGENTS §5). */
@@ -147,6 +86,9 @@ export default function (pi: ExtensionAPI): void {
   track(pi.on("session_start", async (_event, ctx: ExtensionContext) => {
     activeContext = ctx;
     setActiveThemeGetter(() => ctx.ui?.theme);
+    // Point the config cascade at this session's project layer
+    // (defaults <- ~/.pi/agent/ <- <cwd>/.pi/).
+    setConfigCwd(ctx.cwd);
   }));
 
   // Drop the captured context on shutdown so no stale UI/theme handle survives
@@ -162,45 +104,78 @@ export default function (pi: ExtensionAPI): void {
     description:
       "Inspect live model pricing from OpenRouter API (/model-pricing [refresh | help | <query>])",
     getArgumentCompletions: (prefix: string): AutocompleteItem[] | null => {
-      const tokens = prefix.split(/\s+/).filter(Boolean);
-      const trailingSpace = /\s$/.test(prefix);
+      const trimmed = prefix.trimStart();
 
-      // Second level: `/model-pricing sort <spec>`.
-      if (tokens.length > 1 || (trailingSpace && tokens.length === 1)) {
-        const first = (tokens[0] ?? "").toLowerCase();
-        if (first !== "sort") return null;
-        const typed = tokens.slice(1).join(" ").toLowerCase();
-        const items = SORT_PRESETS.filter((preset) =>
-          preset.value.toLowerCase().startsWith(typed),
-        ).map((preset) => ({
-          value: `sort ${preset.value}`,
-          label: `sort ${preset.label}`,
-          description: preset.description,
-        }));
-        return items.length > 0 ? items : null;
-      }
+      const clean = (cleanPrefix: string): AutocompleteItem[] | null => {
+        const tokens = cleanPrefix.split(/\s+/).filter(Boolean);
+        const trailingSpace = /\s$/.test(cleanPrefix);
+        const head = (tokens[0] ?? "").toLowerCase();
 
-      const typed = (tokens[0] ?? "").toLowerCase();
-      const NON_TERMINAL = new Set(["sort"]);
-      const items: AutocompleteItem[] = [];
-      for (const [key, description] of Object.entries(COMMAND_DOCS)) {
-        if (key.toLowerCase().startsWith(typed)) {
-          items.push({
-            value: NON_TERMINAL.has(key) ? `${key} ` : key,
-            label: key,
-            description,
-          });
+        // Second level: `/model-pricing sort <spec>`. A fully typed `sort`
+        // already expands, because Tab closes the picker.
+        if (trailingSpace || head === "sort") {
+          if (head !== "sort") return null;
+          const typed = tokens.slice(1).join(" ").toLowerCase();
+          const items = SORT_PRESETS.filter((preset) =>
+            preset.value.toLowerCase().startsWith(typed),
+          ).map((preset) => ({
+            value: `sort ${preset.value}`,
+            label: `sort ${preset.label}`,
+            description: preset.description,
+          }));
+          return items.length > 0 ? items : null;
         }
+
+        const NON_TERMINAL = new Set(["--global", "sort"]);
+        const items: AutocompleteItem[] = [];
+        for (const [key, description] of Object.entries(COMMAND_DOCS)) {
+          if (key.toLowerCase().startsWith(head)) {
+            items.push({
+              value: NON_TERMINAL.has(key) ? `${key} ` : key,
+              label: key,
+              description,
+            });
+          }
+        }
+
+        return items.length > 0 ? items : null;
+      };
+
+      if (!trimmed.startsWith("--global")) return clean(trimmed);
+
+      const afterGlobal = trimmed.slice(8).trimStart();
+      const hasTrailingSpace = trimmed.length > 8 || /\s$/.test(prefix);
+      if (!hasTrailingSpace && afterGlobal === "") {
+        return [
+          {
+            value: "--global ",
+            label: "--global",
+            description: COMMAND_DOCS["--global"] ?? "save globally",
+          },
+        ];
       }
 
-      return items.length > 0 ? items : null;
+      const sub = clean(afterGlobal);
+      if (!sub) return null;
+      const remapped: AutocompleteItem[] = [];
+      for (const item of sub) {
+        if (item.label === "--global") continue;
+        remapped.push({
+          value: `--global ${item.value}`,
+          label: item.label,
+          description: item.description,
+        });
+      }
+      return remapped.length > 0 ? remapped : null;
     },
     handler: async (args: string, ctx: ExtensionCommandContext) => {
       activeContext = ctx;
-      const trimmed = (args || "").trim();
-      const tokens = trimmed.split(/\s+/).filter(Boolean);
+      const rawTokens = (args || "").trim().split(/\s+/).filter(Boolean);
+      const isGlobal = rawTokens.some((t) => t.toLowerCase() === "--global");
+      const tokens = rawTokens.filter((t) => t.toLowerCase() !== "--global");
       const sub = (tokens[0] ?? "").toLowerCase();
       const rest = tokens.slice(1);
+      const scope = isGlobal ? "globally" : "for this project";
 
       if (!sub || sub === "help" || sub === "-h" || sub === "--help") {
         notify(ctx, helpText(), "info");
@@ -252,15 +227,15 @@ export default function (pi: ExtensionAPI): void {
           return;
         }
         if (requested === "cycle" || requested === "next") {
-          applied = cycleSortSpec();
+          applied = cycleSortSpec(isGlobal);
         } else {
-          applied = setSortSpec(requested);
+          applied = setSortSpec(requested, isGlobal);
         }
         notify(
           ctx,
           `Model ranking: ${formatSortSpec(applied)}${
             isDefaultSort(applied) ? " (Pi's own order)" : ""
-          }\nApplies to the next /model open (press ${getSortKey()} there to cycle).`,
+          }\nApplies to the next /model open (press ${getSortKey()} there to cycle).\nSaved ${scope}.`,
           "info",
         );
         return;
@@ -313,10 +288,11 @@ export default function (pi: ExtensionAPI): void {
 
       const status = getPricingCacheStatus();
       const popularityStatus = getPopularityCacheStatus();
-      // Query search — the whole argument is treated as the keyword.
+      // Query search — the whole argument (minus --global) is the keyword.
+      const query = tokens.join(" ").trim();
       const models = await fetchLiveOpenRouterModels(false);
       await fetchOpenRouterPopularity(false);
-      const lower = trimmed.toLowerCase();
+      const lower = query.toLowerCase();
       const matches = Object.values(models).filter(
         (m) =>
           m.id.toLowerCase().includes(lower) ||
@@ -324,12 +300,12 @@ export default function (pi: ExtensionAPI): void {
       );
 
       if (matches.length === 0) {
-        notify(ctx, `No OpenRouter models found matching "${trimmed}"`, "warning");
+        notify(ctx, `No OpenRouter models found matching "${query}"`, "warning");
         return;
       }
 
       const lines = [
-        `Found ${matches.length} models for "${trimmed}" (OpenRouter live pricing):`,
+        `Found ${matches.length} models for "${query}" (OpenRouter live pricing):`,
         "",
       ];
       for (const m of matches.slice(0, 25)) {

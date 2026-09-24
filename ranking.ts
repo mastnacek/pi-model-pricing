@@ -258,9 +258,9 @@ export function getSortSpec(): string {
   return raw.trim();
 }
 
-export function setSortSpec(raw: string): string {
+export function setSortSpec(raw: string, isGlobal = false): string {
   const next = raw.trim().length > 0 ? raw.trim() : DEFAULT_SORT;
-  updateConfig({ sort: next });
+  updateConfig({ sort: next }, isGlobal);
   return next;
 }
 
@@ -268,11 +268,11 @@ export function setSortSpec(raw: string): string {
  * Advance through SORT_PRESETS. A spec outside the presets (hand-written in the
  * config) cycles to the first preset instead of getting stuck.
  */
-export function cycleSortSpec(): string {
+export function cycleSortSpec(isGlobal = false): string {
   const current = getSortSpec();
   const index = SORT_PRESETS.findIndex((preset) => preset.value === current);
   const next = SORT_PRESETS[(index + 1) % SORT_PRESETS.length];
-  return setSortSpec(next.value);
+  return setSortSpec(next.value, isGlobal);
 }
 
 export function isDefaultSort(raw?: string): boolean {

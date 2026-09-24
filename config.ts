@@ -37,42 +37,79 @@ export function agentDir(): string {
   return override && override.length > 0 ? override : path.join(os.homedir(), ".pi", "agent");
 }
 
-export const CONFIG_PATH = path.join(agentDir(), "pi-model-pricing.json");
+/** Global layer: ~/.pi/agent/pi-model-pricing.json (respects PI_CODING_AGENT_DIR). */
+export const GLOBAL_CONFIG_FILE = path.join(agentDir(), "pi-model-pricing.json");
+
+/** Kept as the historical name for the global layer. */
+export const CONFIG_PATH = GLOBAL_CONFIG_FILE;
+
+/** Project override: <cwd>/.pi/pi-model-pricing.json (wins over the global file). */
+export function projectConfigPath(cwd: string): string {
+  return path.join(cwd, ".pi", "pi-model-pricing.json");
+}
+
+/**
+ * Session cwd the cascade hangs off. Set on session_start; without it only the
+ * global layer applies. Changing it invalidates the cached merge.
+ */
+let activeCwd: string | undefined;
+
+export function setConfigCwd(cwd?: string): void {
+  if (cwd !== activeCwd) {
+    activeCwd = cwd;
+    cached = null;
+  }
+}
 
 let cached: PluginConfig | null = null;
 
-export function loadConfig(): PluginConfig {
-  if (cached) return cached;
+/** Decode a parsed JSON value at the I/O boundary; `{}` on any mismatch. */
+function decodeConfig(value: unknown): PluginConfig {
+  if (value === null || Array.isArray(value)) return {};
+  if (typeof value !== "object") return {};
+  return value as PluginConfig;
+}
+
+function readLayer(file: string): PluginConfig {
   try {
-    if (fs.existsSync(CONFIG_PATH)) {
-      const parsed = JSON.parse(fs.readFileSync(CONFIG_PATH, "utf8"));
-      if (parsed && typeof parsed === "object") {
-        cached = parsed as PluginConfig;
-        return cached;
-      }
+    if (fs.existsSync(file)) {
+      return decodeConfig(JSON.parse(fs.readFileSync(file, "utf8")));
     }
   } catch (err) {
-    console.error("[pi-model-pricing] Failed to read config:", err);
+    console.error(`[pi-model-pricing] Failed to read ${file}:`, err);
   }
-  cached = {};
+  return {};
+}
+
+/**
+ * Effective config with the mandatory cascade:
+ * defaults <- ~/.pi/agent/pi-model-pricing.json <- <cwd>/.pi/pi-model-pricing.json.
+ */
+export function loadConfig(cwd: string | undefined = activeCwd): PluginConfig {
+  if (cached) return cached;
+  const merged = readLayer(GLOBAL_CONFIG_FILE);
+  if (cwd) Object.assign(merged, readLayer(projectConfigPath(cwd)));
+  cached = merged;
   return cached;
 }
 
-export function saveConfig(next: PluginConfig): void {
+/** `--global` (isGlobal) writes the global layer, otherwise <cwd>/.pi/. */
+export function saveConfig(next: PluginConfig, isGlobal = false, cwd: string | undefined = activeCwd): void {
   cached = next;
+  const target = isGlobal || !cwd ? GLOBAL_CONFIG_FILE : projectConfigPath(cwd);
   try {
-    mkdirSync(path.dirname(CONFIG_PATH), { recursive: true });
-    const tmp = `${CONFIG_PATH}.tmp-${process.pid}-${Date.now()}`;
+    mkdirSync(path.dirname(target), { recursive: true });
+    const tmp = `${target}.tmp-${process.pid}-${Date.now()}`;
     writeFileSync(tmp, `${JSON.stringify(next, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
-    renameSync(tmp, CONFIG_PATH);
+    renameSync(tmp, target);
   } catch (err) {
     console.error("[pi-model-pricing] Failed to write config:", err);
   }
 }
 
-export function updateConfig(patch: Partial<PluginConfig>): PluginConfig {
+export function updateConfig(patch: Partial<PluginConfig>, isGlobal = false): PluginConfig {
   const next = { ...loadConfig(), ...patch };
-  saveConfig(next);
+  saveConfig(next, isGlobal);
   return next;
 }
 
