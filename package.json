@@ -46,6 +46,6 @@
     "typebox": "*"
   },
   "scripts": {
-    "test": "node --test test/**/*.test.js"
+    "test": "npx tsx --test test/**/*.test.js"
   }
 }
