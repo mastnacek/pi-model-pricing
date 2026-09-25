@@ -23,88 +23,38 @@ import * as path from "node:path";
 import { getOpenRouterApiKey } from "./openrouter.js";
 import { agentDir, popularityTtlMs } from "./config.js";
 
-export interface ModelPopularity {
-  /** Dataset permaslug this entry was matched from (may include a `:variant`). */
-  slug: string;
-  /** Total tokens over the whole window. */
-  tokens: number;
-  /** Average tokens per day the model was ranked. */
-  tokensPerDay: number;
-  /** Number of days the model appeared in the daily top 50. */
-  daysRanked: number;
-  /** Best (lowest) daily rank achieved inside the window. */
-  bestRank: number;
-  /** Rank by total tokens across every ranked model in the window. */
-  globalRank: number;
-  /** Fraction (0..1) of all ranked model tokens in the window. */
-  share: number;
-  /** How the catalog model was joined to the dataset row. */
-  matchedBy: "canonical" | "id" | "normalized";
-}
+import type {
+  CachePayload,
+  ModelPopularity,
+  PopularityCacheStatus,
+  PopularityIndex,
+  RawRow,
+} from "./src/popularity/types.js";
+import { buildEntries, buildIndex, normalizeSlug } from "./src/popularity/aggregate.js";
 
-export interface PopularityCacheStatus {
-  loaded: boolean;
-  /** True when the cache is missing or older than the configured TTL. */
-  stale: boolean;
-  count: number;
-  timestamp: number | null;
-  ageMinutes: number | null;
-  ttlHours: number;
-  windowStart?: string;
-  windowEnd?: string;
-  asOf?: string;
-}
+// Re-exported so every existing importer keeps working unchanged.
+export type { ModelPopularity, PopularityCacheStatus } from "./src/popularity/types.js";
 
-/** Canonical attribution required by OpenRouter's CC BY 4.0 license. */
 export function popularityAttribution(status = getPopularityCacheStatus()): string {
   const asOf = status.asOf ? new Date(status.asOf).toISOString() : "unknown";
   return `Source: OpenRouter (openrouter.ai/rankings), as of ${asOf}. Licensed under CC BY 4.0.`;
 }
 
-interface RawRow {
-  date?: string;
-  model_permaslug?: string;
-  total_tokens?: string;
-}
-
-/** Aggregated per-slug data before global ranking is applied. */
-interface SlugAggregate {
-  slug: string;
-  tokens: number;
-  days: Array<{ date: string; rank: number; tokens: number }>;
-}
-
-interface PopularityIndex {
-  /** Dataset slug -> entry (exact match target). */
-  bySlug: Map<string, ModelPopularity>;
-  /** Normalized (date-stripped, variant-preserving) key -> entry. */
-  byKey: Map<string, ModelPopularity>;
-  /** All entries, sorted by total tokens descending. */
-  ranked: ModelPopularity[];
-  windowStart?: string;
-  windowEnd?: string;
-  asOf?: string;
-  generatedAt: number;
-}
-
-interface CachePayload {
-  timestamp: number;
-  version: 1;
-  entries: ModelPopularity[];
-  windowStart?: string;
-  windowEnd?: string;
-  asOf?: string;
-}
-
 const CACHE_DIR = path.join(agentDir(), "cache");
+
 const CACHE_FILE = path.join(CACHE_DIR, "openrouter-popularity-cache.json");
+
 const ENDPOINT = "https://openrouter.ai/api/v1/datasets/rankings-daily";
 
 let index: PopularityIndex | null = null;
+
 let lastFetchTimestamp: number | null = null;
+
 let isFetching = false;
+
 let lastError: string | null = null;
 /** Incremented on every successful fetch, so callers can detect new data. */
+
 let refreshCount = 0;
 
 /* ------------------------------------------------------------------ */
@@ -118,112 +68,6 @@ let refreshCount = 0;
  * first, because date-stripping alone collides across revisions of the same
  * model family (e.g. `deepseek-v4-flash-20260423` vs `...-20260731`).
  */
-function normalizeSlug(slug: string): string {
-  const colon = slug.indexOf(":");
-  const base = colon >= 0 ? slug.slice(0, colon) : slug;
-  const variant = colon >= 0 ? slug.slice(colon) : "";
-  return `${base.replace(/-\d{8}$/, "")}${variant}`;
-}
-
-/* ------------------------------------------------------------------ */
-/* Aggregation                                                         */
-/* ------------------------------------------------------------------ */
-
-function buildEntries(rows: RawRow[]): {
-  entries: ModelPopularity[];
-  windowStart?: string;
-  windowEnd?: string;
-} {
-  const byDate = new Map<string, RawRow[]>();
-  let windowStart: string | undefined;
-  let windowEnd: string | undefined;
-
-  for (const row of rows) {
-    const date = typeof row.date === "string" ? row.date : undefined;
-    const slug = typeof row.model_permaslug === "string" ? row.model_permaslug : undefined;
-    if (!date || !slug || slug === "other") continue;
-    if (!windowStart || date < windowStart) windowStart = date;
-    if (!windowEnd || date > windowEnd) windowEnd = date;
-    const bucket = byDate.get(date);
-    if (bucket) bucket.push(row);
-    else byDate.set(date, [row]);
-  }
-
-  const aggregates = new Map<string, SlugAggregate>();
-
-  for (const [date, bucket] of byDate) {
-    // Defensive re-sort: the API already orders rows by total_tokens desc, but
-    // rank derivation must not depend on that guarantee.
-    const ranked = bucket
-      .map((row) => ({
-        slug: row.model_permaslug as string,
-        tokens: Number(row.total_tokens ?? 0),
-      }))
-      .sort((a, b) => b.tokens - a.tokens || a.slug.localeCompare(b.slug));
-
-    ranked.forEach((entry, i) => {
-      const existing = aggregates.get(entry.slug);
-      const record = { date, rank: i + 1, tokens: entry.tokens };
-      if (existing) {
-        existing.tokens += entry.tokens;
-        existing.days.push(record);
-      } else {
-        aggregates.set(entry.slug, {
-          slug: entry.slug,
-          tokens: entry.tokens,
-          days: [record],
-        });
-      }
-    });
-  }
-
-  const totalTokens = [...aggregates.values()].reduce((sum, a) => sum + a.tokens, 0);
-  const sorted = [...aggregates.values()].sort(
-    (a, b) => b.tokens - a.tokens || a.slug.localeCompare(b.slug),
-  );
-
-  const entries: ModelPopularity[] = sorted.map((agg, i) => ({
-    slug: agg.slug,
-    tokens: agg.tokens,
-    tokensPerDay: agg.days.length > 0 ? agg.tokens / agg.days.length : 0,
-    daysRanked: agg.days.length,
-    bestRank: agg.days.reduce((min, d) => Math.min(min, d.rank), Number.MAX_SAFE_INTEGER),
-    globalRank: i + 1,
-    share: totalTokens > 0 ? agg.tokens / totalTokens : 0,
-    matchedBy: "canonical",
-  }));
-
-  return { entries, windowStart, windowEnd };
-}
-
-function buildIndex(
-  entries: ModelPopularity[],
-  meta: { windowStart?: string; windowEnd?: string; asOf?: string },
-): PopularityIndex {
-  const bySlug = new Map<string, ModelPopularity>();
-  const byKey = new Map<string, ModelPopularity>();
-  for (const entry of entries) {
-    bySlug.set(entry.slug, entry);
-    const key = normalizeSlug(entry.slug);
-    // A collision here means two revisions of one family. Keep the busier one
-    // rather than an arbitrary first-write winner.
-    const prev = byKey.get(key);
-    if (!prev || entry.tokens > prev.tokens) byKey.set(key, entry);
-  }
-  return {
-    bySlug,
-    byKey,
-    ranked: entries,
-    windowStart: meta.windowStart,
-    windowEnd: meta.windowEnd,
-    asOf: meta.asOf,
-    generatedAt: Date.now(),
-  };
-}
-
-/* ------------------------------------------------------------------ */
-/* Disk cache                                                          */
-/* ------------------------------------------------------------------ */
 
 function loadCacheFromDisk(): boolean {
   try {
@@ -341,6 +185,7 @@ export async function initOpenRouterPopularity(): Promise<void> {
 }
 
 /** True when there is no usable cache or it is older than the configured TTL. */
+
 export function isPopularityStale(): boolean {
   if (!index || !lastFetchTimestamp) return true;
   return Date.now() - lastFetchTimestamp >= popularityTtlMs();
@@ -351,6 +196,7 @@ export function isPopularityStale(): boolean {
  * background only when stale, and invokes `onRefreshed` only if new data
  * actually arrived (so callers can safely re-render without churn).
  */
+
 export function ensurePopularityFresh(onRefreshed?: () => void): void {
   if (!isPopularityStale() || isFetching) return;
   const before = refreshCount;
@@ -360,6 +206,7 @@ export function ensurePopularityFresh(onRefreshed?: () => void): void {
 }
 
 /** Monotonic counter of successful fetches; lets callers detect new data. */
+
 export function getPopularityRefreshCount(): number {
   return refreshCount;
 }
@@ -377,6 +224,7 @@ export function getPopularityRefreshCount(): number {
  * canonical slug, since the catalog strips it from `canonical_slug` while the
  * dataset ranks variants as separate rows.
  */
+
 export function getModelPopularity(
   modelId: string | undefined,
   canonicalSlug?: string | undefined,
@@ -409,6 +257,7 @@ export function getModelPopularity(
 }
 
 /** Top `limit` models by total tokens inside the cached window. */
+
 export function getTopPopular(limit = 15): ModelPopularity[] {
   if (!index) return [];
   return index.ranked.slice(0, Math.max(0, limit));
@@ -432,6 +281,7 @@ export function getPopularityCacheStatus(): PopularityCacheStatus {
 }
 
 /** Last fetch error, surfaced by `/model-pricing` so a 401/429 is not silent. */
+
 export function getPopularityLastError(): string | null {
   return lastError;
 }
@@ -456,6 +306,7 @@ export function formatShare(share: number): string {
 }
 
 /** Window length in whole days, for labels like "30d". */
+
 export function windowLabel(status = getPopularityCacheStatus()): string {
   if (!status.windowStart || !status.windowEnd) return "window";
   const start = Date.parse(`${status.windowStart}T00:00:00Z`);
