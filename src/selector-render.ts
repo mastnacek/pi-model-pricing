@@ -6,14 +6,16 @@
  * module reads it; `selector-patch.ts` hands the getter in via
  * `setActiveThemeGetter` and re-exports it unchanged.
  */
-import { createRequire } from "node:module";
 import { formatPriceNumber } from "../openrouter.js";
 import { formatShare, formatTokens, getPopularityCacheStatus, windowLabel } from "../popularity.js";
 import { resolveModelCost, resolvePopularity } from "../ranking.js";
 
+/**
+ * The active theme, supplied by `index.ts` from `ctx.ui.theme` — the documented way
+ * for an extension to reach it. Until a session context exists this is null, so
+ * `colorize` returns unstyled text, which is what the TUI expects before initTheme().
+ */
 let activeThemeGetter: (() => any) | null = null;
-
-let fallbackTheme: any = null;
 
 /** Human-readable freshness of the popularity cache, for the list header. */
 export function popularityStatusText(): string {
@@ -31,28 +33,13 @@ export function popularityStatusText(): string {
   return `🔥 ${status.count} ranked · ${age}${suffix}`;
 }
 
-try {
-  const req = createRequire(import.meta.url);
-  const themeMod = req(
-    "/home/jara/.local/lib/node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js",
-  );
-  if (themeMod?.theme) {
-    fallbackTheme = themeMod.theme;
-  }
-} catch (err) {
-  void err;
-}
-
-
 export function setActiveThemeGetter(getter: () => any) {
   activeThemeGetter = getter;
 }
 
-
 export function colorize(colorName: string, text: string): string {
   try {
-    const theme =
-      (activeThemeGetter ? activeThemeGetter() : null) ?? fallbackTheme;
+    const theme = activeThemeGetter ? activeThemeGetter() : null;
     if (theme && typeof theme.fg === "function") {
       return theme.fg(colorName, text);
     }
@@ -62,7 +49,6 @@ export function colorize(colorName: string, text: string): string {
   }
   return text;
 }
-
 
 export function formatRowPriceBadge(model: any): string {
   const info = resolveModelCost(model);
